@@ -223,7 +223,7 @@ def get_availability_status(row, availability_data):
 def display_available_lawyers():
     """Display all available lawyers and their capacity"""
     availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
-    matters_data = load_and_clean_data('BD_Caravel.csv')
+    matters_data = load_and_clean_data('Updated_Lawyer_Bio_Data.csv')
     
     available_lawyers = availability_data[availability_data['Do you have capacity to take on new work?'].isin(['Yes', 'Maybe'])]
     
