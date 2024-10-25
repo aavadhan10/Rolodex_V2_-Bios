@@ -219,7 +219,8 @@ def get_availability_status(row, availability_data):
         return "Moderate Availability"
     else:
         return "Low Availability"
-   def display_available_lawyers():
+
+def display_available_lawyers():
     """Display all available lawyers and their capacity"""
     availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
     matters_data = load_and_clean_data('BD_Caravel.csv')
