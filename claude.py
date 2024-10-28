@@ -421,12 +421,12 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     
     # If keyword search yields results, use them. Otherwise, use all data.
     if not keyword_results.empty:
-        relevant_data = keyword_results
+        relevant_data = keyword_results.copy()  # Create explicit copy
     else:
-        relevant_data = matters_data
+        relevant_data = matters_data.copy()  # Create explicit copy
 
     # Calculate keyword-based relevance scores
-    relevant_data['keyword_score'] = relevant_data.apply(
+    relevant_data.loc[:, 'keyword_score'] = relevant_data.apply(
         lambda row: calculate_relevance_score(' '.join(row.astype(str)), query_keywords), axis=1
     )
 
@@ -436,14 +436,14 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     
     # Add semantic relevance scores
     semantic_scores = 1 / (1 + D[0])
-    relevant_data['semantic_score'] = 0
-    relevant_data.iloc[I[0], relevant_data.columns.get_loc('semantic_score')] = semantic_scores
+    relevant_data.loc[:, 'semantic_score'] = 0
+    relevant_data.iloc[I[0]].loc[:, 'semantic_score'] = semantic_scores
 
     # Calculate final relevance score
-    relevant_data['relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
+    relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
 
     # Add availability information
-    relevant_data['availability_status'] = relevant_data.apply(
+    relevant_data.loc[:, 'availability_status'] = relevant_data.apply(
         lambda row: get_availability_status(row, availability_data), axis=1
     )
     
@@ -457,8 +457,8 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         "Unknown": 0.5
     }
     
-    relevant_data['availability_weight'] = relevant_data['availability_status'].map(availability_weights)
-    relevant_data['final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
+    relevant_data.loc[:, 'availability_weight'] = relevant_data['availability_status'].map(availability_weights)
+    relevant_data.loc[:, 'final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
 
     # Sort by final score
     relevant_data = relevant_data.sort_values('final_score', ascending=False)
@@ -501,34 +501,33 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     )
 
     # Updated message format for Claude 3.5
-    system_message = {
-        "role": "user",
-        "content": """You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. 
-        Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. 
-        Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience 
-        of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. 
-        Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."""
-    }
+    messages = [
+        {
+            "role": "system",
+            "content": """You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. 
+            Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. 
+            Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience 
+            of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. 
+            Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."""
+        },
+        {
+            "role": "user",
+            "content": f"""Core query keywords: {', '.join(query_keywords)}
+            Original question: {question}
 
-    user_message = {
-        "role": "user",
-        "content": f"""Core query keywords: {', '.join(query_keywords)}
-        Original question: {question}
+            Top Lawyers Information:
+            {primary_context}
 
-        Top Lawyers Information:
-        {primary_context}
+            Relevant Areas of Practice (including relevance scores):
+            {secondary_context}
+            {availability_context}
 
-        Relevant Areas of Practice (including relevance scores):
-        {secondary_context}
-        {availability_context}
-
-        Based on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. 
-        Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience 
-        and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). 
-        If no lawyers have both relevant experience and availability, explain this clearly."""
-    }
-
-    messages = [system_message, user_message]
+            Based on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. 
+            Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience 
+            and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). 
+            If no lawyers have both relevant experience and availability, explain this clearly."""
+        }
+    ]
 
     # Call Claude 3.5 with the new message format
     claude_response = call_claude(messages)
