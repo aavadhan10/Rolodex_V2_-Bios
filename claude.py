@@ -99,30 +99,23 @@ def init_anthropic_client():
 client = init_anthropic_client()
 def call_claude(messages):
     try:
-        # Format messages for Claude 3.5
-        formatted_messages = []
-        system_message = None
-        
-        for msg in messages:
-            if msg['role'] == 'system':
-                system_message = msg['content']
-                continue
-            formatted_messages.append({
-                "role": "assistant" if msg['role'] == 'assistant' else "user",
-                "content": msg['content']
-            })
+        # Get system message and other messages
+        system_message = next((msg['content'] for msg in messages if msg['role'] == 'system'), None)
+        user_messages = [msg for msg in messages if msg['role'] != 'system']
 
-        # Create the message with Claude 3.5
-        response = client.messages.create(
+        # Use completions API instead of messages API
+        prompt = f"{system_message}\n\nHuman: {user_messages[0]['content']}\n\nAssistant:"
+        
+        response = client.completions.create(
             model="claude-3-sonnet-20240229",
-            system=system_message,  # Pass system message separately
-            messages=formatted_messages,
-            max_tokens=1024
+            prompt=prompt,
+            max_tokens=1024,
+            temperature=0.7
         )
         
-        return response.content
+        return response.completion
     except Exception as e:
-        st.error(f"Error calling Claude: {str(e)}")
+        st.error(f"Error calling Claude: {e}")
         return None
 def load_and_clean_data(file_path, encoding='utf-8'):
     """Load and clean the lawyer bio data"""
