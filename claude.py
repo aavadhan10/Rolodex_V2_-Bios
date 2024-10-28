@@ -372,6 +372,7 @@ def create_weighted_vector_db(data):
     index = faiss.IndexFlatIP(X.shape[1])
     index.add(np.ascontiguousarray(X_normalized.toarray()))
     return index, vectorizer
+
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     """Query Claude with data and handle semantic search properly"""
     # Load availability data
@@ -445,12 +446,6 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     # [Rest of the function remains the same]
     return top_relevant_data  # Make sure to return the processed data
 
-    
-
-
-
-
-    
 
     # Include availability status and bio info in the output
     primary_info = top_relevant_data[['First Name', 'Last Name', 'Level/Title', 'Call', 'Jurisdiction', 'Location', 
