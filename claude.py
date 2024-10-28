@@ -108,6 +108,27 @@ def init_anthropic_client():
 # Create the client instance
 client = init_anthropic_client()
 
+def call_claude(messages):
+    """Call Claude API"""
+    try:
+        system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
+        user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
+        
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            system=system_message,
+            messages=[{
+                "role": "user",
+                "content": user_message
+            }]
+        )
+        return response.content[0].text
+    except APIError as e:
+        st.error(f"API Error: {e}")
+        return None
+    except Exception as e:
+        st.error(f"Error calling Claude: {e}")
+        return None
 
 def load_and_clean_data(file_path, encoding='utf-8'):
     try:
@@ -130,7 +151,6 @@ def load_and_clean_data(file_path, encoding='utf-8'):
     for col in data.columns:
         data[col] = data[col].apply(clean_text)
     
-    # Map new column names to match the functionality
     column_mappings = {
         'First Name': 'First Name',
         'Last Name': 'Last Name',
@@ -226,71 +246,6 @@ def get_availability_status(row, availability_data):
         return "Moderate Availability"
     else:
         return "Low Availability"
-
-def display_available_lawyers():
-    """Display all available lawyers and their capacity"""
-    availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
-    matters_data = load_and_clean_data('Updated_Lawyer_Bio_Data.csv')
-    
-    available_lawyers = availability_data[availability_data['Do you have capacity to take on new work?'].isin(['Yes', 'Maybe'])]
-    
-    st.write("### Currently Available Lawyers")
-    
-    for _, lawyer in available_lawyers.iterrows():
-        name = f"{lawyer['First Name']} {lawyer['Last Name']}"
-        
-        lawyer_info = matters_data[
-            (matters_data['First Name'] == lawyer['First Name']) & 
-            (matters_data['Last Name'] == lawyer['Last Name'])
-        ]
-        
-        practice_areas = lawyer_info['Area of Practise + Add Info'].iloc[0] if not lawyer_info.empty else "Information not available"
-        
-        with st.expander(f"🧑‍⚖️ {name} - {'Ready for New Work' if lawyer['Do you have capacity to take on new work?'] == 'Yes' else 'Limited Availability'}"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Availability Details:**")
-                st.write(f"• Days per week: {lawyer['What is your capacity to take on new work for the forseeable future? Days per week']}")
-                st.write(f"• Hours per month: {lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month']}")
-                st.write(f"• Preferred engagement types: {lawyer['What type of engagement would you like to consider?']}")
-            
-            with col2:
-                st.write("**Practice Areas:**")
-                st.write(practice_areas)
-                
-                if not lawyer_info.empty and pd.notna(lawyer_info['Lawyer Bio Info'].iloc[0]):
-                    st.write("**Bio Information:**")
-                    st.write(lawyer_info['Lawyer Bio Info'].iloc[0])
-            
-            notes = lawyer['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?']
-            if pd.notna(notes) and notes.lower() not in ['no', 'n/a', 'none', 'nil']:
-                st.write("**Availability Notes:**")
-                st.write(notes)
-
-
-def call_claude(messages):
-    """Call Claude API"""
-    try:
-        system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
-        user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
-        
-        response = client.messages.create(
-            model="claude-3-sonnet-20240229",
-            system=system_message,
-            messages=[{
-                "role": "user",
-                "content": user_message
-            }]
-        )
-        return response.content[0].text
-    except APIError as e:
-        st.error(f"API Error: {e}")
-        return None
-    except Exception as e:
-        st.error(f"Error calling Claude: {e}")
-        return None
-
 
 def expand_query(query):
     """Expand the query with synonyms and related words."""
@@ -443,10 +398,6 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         )
     ].sort_values('final_score', ascending=False)
 
-    # [Rest of the function remains the same]
-    return top_relevant_data  # Make sure to return the processed data
-
-
     # Include availability status and bio info in the output
     primary_info = top_relevant_data[['First Name', 'Last Name', 'Level/Title', 'Call', 'Jurisdiction', 'Location', 
                                     'Area of Practise + Add Info', 'Industry Experience', 'Education', 'availability_status', 
@@ -549,7 +500,8 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
             
             st.write("### Recommended Lawyers Info:")
             st.write(recommended_df.to_html(index=False), unsafe_allow_html=True)
-
+        else:
+            st.write("No lawyers were specifically recommended in Claude's response.")
     else:
         st.write("No lawyers with relevant experience were found for this query.")
 
@@ -601,4 +553,7 @@ if st.experimental_get_query_params().get("admin", [""])[0].lower() == "true":
         df_most_asked = get_most_asked_queries()
         st.write(df_most_asked)
         st.markdown(get_csv_download_link(df_most_asked), unsafe_allow_html=True)
+
+
+
 
