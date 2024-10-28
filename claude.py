@@ -430,14 +430,21 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         lambda row: calculate_relevance_score(' '.join(row.astype(str)), query_keywords), axis=1
     )
 
-    # Perform semantic search
+    # Perform semantic search with safety checks
     question_vec = matters_vectorizer.transform([' '.join(query_keywords)])
-    D, I = matters_index.search(normalize(question_vec).toarray(), k=len(relevant_data))
+    D, I = matters_index.search(normalize(question_vec).toarray(), k=min(len(relevant_data), 100))  # Limit to prevent out of bounds
     
-    # Add semantic relevance scores
+    # Add semantic relevance scores - fixed assignment
     semantic_scores = 1 / (1 + D[0])
-    relevant_data.loc[:, 'semantic_score'] = 0
-    relevant_data.iloc[I[0]].loc[:, 'semantic_score'] = semantic_scores
+    relevant_data.loc[:, 'semantic_score'] = 0  # Initialize scores
+    
+    # Create a boolean mask for the indices
+    valid_indices = I[0] < len(relevant_data)
+    valid_I = I[0][valid_indices]
+    valid_scores = semantic_scores[valid_indices]
+    
+    # Use index locations to assign scores
+    relevant_data.iloc[valid_I, relevant_data.columns.get_loc('semantic_score')] = valid_scores
 
     # Calculate final relevance score
     relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
@@ -500,7 +507,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         for name, details in availability_details.items()
     )
 
-    # Updated message format for Claude 3.5
+    # Format messages for Claude 3.5
     messages = [
         {
             "role": "system",
@@ -543,7 +550,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
 
     if not primary_info.empty:
         # Extract names of recommended lawyers from Claude's response in order
-        response_text = claude_response.lower()
+        response_text = claude_response.lower() if isinstance(claude_response, str) else ""
         recommended_lawyers = []
         
         # Get all lawyers mentioned in Claude's response in the order they appear
