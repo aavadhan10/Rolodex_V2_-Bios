@@ -92,7 +92,7 @@ def get_csv_download_link(df, filename="most_asked_queries.csv"):
     except Exception as e:
         st.warning(f"Error creating download link: {str(e)}")
         return ""
-
+        
 def init_anthropic_client():
     """Initialize Anthropic client with API key"""
     try:
@@ -104,25 +104,25 @@ def init_anthropic_client():
     except Exception as e:
         st.error(f"Error initializing Anthropic client: {e}")
         st.stop()
-
 # Create the client instance
 client = init_anthropic_client()
 
 def call_claude(messages):
-    """Call Claude API"""
+    """Call Claude 3.5 API using Messages format"""
     try:
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
         
-        prompt = f"{system_message}\n\nHuman: {user_message}\n\nAssistant:"
-        
-        response = client.completions.create(
+        # Using the Messages API format required for Claude 3.5
+        response = client.messages.create(
             model="claude-3-sonnet-20240229",
-            prompt=prompt,
-            max_tokens_to_sample=500,
-            temperature=0.7
+            system=system_message,
+            messages=[{"role": "user", "content": user_message}],
+            temperature=0.7,
+            max_tokens=500
         )
-        return response.completion
+        
+        return response.content[0].text
     except APIError as e:
         st.error(f"API Error: {e}")
         return None
