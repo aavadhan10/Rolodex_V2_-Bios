@@ -17,6 +17,7 @@ import csv
 from collections import Counter
 import base64
 
+# Initialize NLTK downloads safely
 def safe_nltk_download(package):
     """Safely download NLTK data packages"""
     try:
@@ -26,7 +27,6 @@ def safe_nltk_download(package):
     except Exception as e:
         st.warning(f"Warning: Could not download NLTK package {package}. Error: {str(e)}")
 
-# Initialize NLTK downloads safely
 try:
     nltk_data_dir = os.path.expanduser('~/nltk_data')
     os.makedirs(nltk_data_dir, exist_ok=True)
@@ -36,6 +36,37 @@ try:
     safe_nltk_download('punkt')
 except Exception as e:
     st.warning(f"Warning: Issue with NLTK setup. Some features may be limited. Error: {str(e)}")
+
+# Initialize Anthropic client
+def init_anthropic_client():
+    claude_api_key = st.secrets["CLAUDE_API_KEY"]
+    if not claude_api_key:
+        st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
+        st.stop()
+    return Anthropic(api_key=claude_api_key)
+
+client = init_anthropic_client()
+
+def call_claude(messages):
+    try:
+        # Get system message and other messages
+        system_message = next((msg['content'] for msg in messages if msg['role'] == 'system'), None)
+        user_messages = [msg for msg in messages if msg['role'] != 'system']
+
+        # Use completions API instead of messages API
+        prompt = f"{system_message}\n\nHuman: {user_messages[0]['content']}\n\nAssistant:"
+        
+        response = client.completions.create(
+            model="claude-3-sonnet-20240229",
+            prompt=prompt,
+            max_tokens_to_sample=1024,
+            temperature=0.7
+        )
+        
+        return response.completion
+    except Exception as e:
+        st.error(f"Error calling Claude: {e}")
+        return None
 
 def log_query_and_result(query, result):
     """Log queries and results to a CSV file"""
@@ -89,34 +120,6 @@ def get_csv_download_link(df, filename="most_asked_queries.csv"):
         st.warning(f"Error creating download link: {str(e)}")
         return ""
 
-def init_anthropic_client():
-    claude_api_key = st.secrets["CLAUDE_API_KEY"]
-    if not claude_api_key:
-        st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
-        st.stop()
-    return Anthropic(api_key=claude_api_key)
-
-client = init_anthropic_client()
-def call_claude(messages):
-    try:
-        # Get system message and other messages
-        system_message = next((msg['content'] for msg in messages if msg['role'] == 'system'), None)
-        user_messages = [msg for msg in messages if msg['role'] != 'system']
-
-        # Use completions API instead of messages API
-        prompt = f"{system_message}\n\nHuman: {user_messages[0]['content']}\n\nAssistant:"
-        
-        response = client.completions.create(
-            model="claude-3-sonnet-20240229",
-            prompt=prompt,
-            max_tokens=1024,
-            temperature=0.7
-        )
-        
-        return response.completion
-    except Exception as e:
-        st.error(f"Error calling Claude: {e}")
-        return None
 def load_and_clean_data(file_path, encoding='utf-8'):
     """Load and clean the lawyer bio data"""
     try:
@@ -237,39 +240,6 @@ def get_availability_status(row, availability_data):
     else:
         return "Low Availability"
 
-@st.cache_resource
-def create_weighted_vector_db(data):
-    """Create weighted vector database for lawyer matching"""
-    def weighted_text(row):
-        return ' '.join([
-            str(row['First Name']),
-            str(row['Last Name']),
-            str(row['Level/Title']),
-            str(row['Call']),
-            str(row['Jurisdiction']),
-            str(row['Location']),
-            str(row['Area of Practise + Add Info']),
-            str(row['Industry Experience']),
-            str(row['Languages']),
-            str(row['Previous In-House Companies']),
-            str(row['Previous Companies/Firms']),
-            str(row['Education']),
-            str(row['Awards/Recognition']),
-            str(row['City of Residence']),
-            str(row['Notable Items/Personal Details']),
-            str(row['Expert']),
-            str(row['Lawyer Bio Info'])
-        ])
-
-    combined_text = data.apply(weighted_text, axis=1)
-    vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
-    X = vectorizer.fit_transform(combined_text)
-    X_normalized = normalize(X, norm='l2', axis=1, copy=False)
-    
-    index = faiss.IndexFlatIP(X.shape[1])
-    index.add(np.ascontiguousarray(X_normalized.toarray()))
-    return index, vectorizer
-
 def expand_query(query):
     """Expand the query with synonyms and related words"""
     expanded_query = []
@@ -320,57 +290,10 @@ def calculate_relevance_score(text, query_keywords):
         return 0
     text_lower = text.lower()
     return sum(text_lower.count(keyword) for keyword in query_keywords)
-def expand_query(query):
-    """Expand the query with synonyms and related words."""
-    expanded_query = []
-    for word, tag in nltk.pos_tag(nltk.word_tokenize(query)):
-        synsets = wordnet.synsets(word)
-        if synsets:
-            synonyms = set()
-            for synset in synsets:
-                synonyms.update(lemma.name().replace('_', ' ') for lemma in synset.lemmas())
-            expanded_query.extend(list(synonyms)[:3])
-        expanded_query.append(word)
-    return ' '.join(expanded_query)
-
-def normalize_query(query):
-    """Normalize the query by removing punctuation and converting to lowercase."""
-    query = re.sub(r'[^\w\s]', '', query)
-    return query.lower()
-
-def preprocess_query(query):
-    """Process and extract key terms from the query."""
-    tokens = word_tokenize(query)
-    tagged = pos_tag(tokens)
-    keywords = [word.lower() for word, pos in tagged if pos in ['NN', 'NNS', 'NNP', 'NNPS', 'JJ', 'JJR', 'JJS']]
-    stop_words = ['lawyer', 'best', 'top', 'find', 'me', 'give', 'who']
-    keywords = [word for word in keywords if word not in stop_words]
-    return keywords
-
-def keyword_search(data, query_keywords):
-    search_columns = ['Area of Practise + Add Info', 'Industry Experience', 'Expert', 'Lawyer Bio Info']
-    
-    def contains_any_term(text):
-        if not isinstance(text, str):
-            return False
-        text_lower = text.lower()
-        return any(term in text_lower for term in query_keywords)
-    
-    masks = [data[col].apply(contains_any_term) for col in search_columns]
-    final_mask = masks[0]
-    for mask in masks[1:]:
-        final_mask |= mask
-    
-    return data[final_mask]
-
-def calculate_relevance_score(text, query_keywords):
-    if not isinstance(text, str):
-        return 0
-    text_lower = text.lower()
-    return sum(text_lower.count(keyword) for keyword in query_keywords)
 
 @st.cache_resource
 def create_weighted_vector_db(data):
+    """Create weighted vector database for lawyer matching"""
     def weighted_text(row):
         return ' '.join([
             str(row['First Name']),
@@ -401,6 +324,46 @@ def create_weighted_vector_db(data):
     index.add(np.ascontiguousarray(X_normalized.toarray()))
     return index, vectorizer
 
+def display_available_lawyers():
+    """Display all available lawyers and their capacity"""
+    availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
+    matters_data = load_and_clean_data('Updated_Lawyer_Bio_Data.csv')
+    
+    available_lawyers = availability_data[availability_data['Do you have capacity to take on new work?'].isin(['Yes', 'Maybe'])]
+    
+    st.write("### Currently Available Lawyers")
+    
+    for _, lawyer in available_lawyers.iterrows():
+        name = f"{lawyer['First Name']} {lawyer['Last Name']}"
+        
+        lawyer_info = matters_data[
+            (matters_data['First Name'] == lawyer['First Name']) & 
+            (matters_data['Last Name'] == lawyer['Last Name'])
+        ]
+        
+        practice_areas = lawyer_info['Area of Practise + Add Info'].iloc[0] if not lawyer_info.empty else "Information not available"
+        
+        with st.expander(f"🧑‍⚖️ {name} - {'Ready for New Work' if lawyer['Do you have capacity to take on new work?'] == 'Yes' else 'Limited Availability'}"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Availability Details:**")
+                st.write(f"• Days per week: {lawyer['What is your capacity to take on new work for the forseeable future? Days per week']}")
+                st.write(f"• Hours per month: {lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month']}")
+                st.write(f"• Preferred engagement types: {lawyer['What type of engagement would you like to consider?']}")
+            
+            with col2:
+                st.write("**Practice Areas:**")
+                st.write(practice_areas)
+                
+                if not lawyer_info.empty and pd.notna(lawyer_info['Lawyer Bio Info'].iloc[0]):
+                    st.write("**Bio Information:**")
+                    st.write(lawyer_info['Lawyer Bio Info'].iloc[0])
+            
+            notes = lawyer['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?']
+            if pd.notna(notes) and notes.lower() not in ['no', 'n/a', 'none', 'nil']:
+                st.write("**Availability Notes:**")
+                st.write(notes)
 
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     # Load availability data
@@ -427,23 +390,33 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     question_vec = matters_vectorizer.transform([' '.join(query_keywords)])
     normalized_vec = normalize(question_vec).toarray()
     
-    # Limit k to the actual number of rows in relevant_data
-    k = min(len(relevant_data), 100)
-    if k > 0:  # Only perform search if we have data
-        D, I = matters_index.search(normalized_vec, k)
-        
-        # Add semantic relevance scores - fixed assignment
-        semantic_scores = 1 / (1 + D[0])
-        relevant_data.loc[:, 'semantic_score'] = 0  # Initialize scores
-        
-        # Create index mapping
-        df_indices = relevant_data.index.tolist()
-        for idx, score in zip(I[0], semantic_scores):
-            if idx < len(df_indices):
-                relevant_data.loc[df_indices[idx], 'semantic_score'] = score
-    else:
-        # If no data, initialize semantic_score column to 0
-        relevant_data.loc[:, 'semantic_score'] = 0
+    # Initialize semantic_score column
+    relevant_data.loc[:, 'semantic_score'] = 0
+    
+    # Only perform search if we have data
+    if len(relevant_data) > 0:
+        try:
+            # Get number of results to fetch
+            k = min(len(relevant_data), 100)
+            
+            # Perform the search
+            D, I = matters_index.search(normalized_vec, k)
+            
+            # Calculate scores
+            semantic_scores = 1 / (1 + D[0])
+            
+            # Create a mapping between FAISS indices and DataFrame indices
+            faiss_to_df_indices = dict(enumerate(relevant_data.index))
+            
+            # Safely assign scores
+            for faiss_idx, score in zip(I[0], semantic_scores):
+                if faiss_idx < len(faiss_to_df_indices):
+                    df_idx = faiss_to_df_indices[faiss_idx]
+                    relevant_data.loc[df_idx, 'semantic_score'] = score
+                    
+        except Exception as e:
+            st.warning(f"Warning: Error in semantic search, falling back to keyword search only. Error: {str(e)}")
+            relevant_data.loc[:, 'semantic_score'] = 0
 
     # Calculate final relevance score
     relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
@@ -606,7 +579,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         st.write("No lawyers with relevant experience were found for this query.")
 
 # Streamlit app layout
-st.title("Rolodex Caravel Version 2 Lawyer Bio 👨‍⚖️ Utilizing Claude 3.5")
+st.title("Rolodex Caravel Version 3 Lawyer Bio 👨‍⚖️ Utilizing Claude 3.5")
 st.write("Ask questions about the skill-matched lawyers for your specific legal needs and their availability:")
 
 # Add tabs for different views
@@ -653,4 +626,6 @@ if st.experimental_get_query_params().get("admin", [""])[0].lower() == "true":
         df_most_asked = get_most_asked_queries()
         st.write(df_most_asked)
         st.markdown(get_csv_download_link(df_most_asked), unsafe_allow_html=True)
+
+
 
