@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-from anthropic.beta import AnthropicBedrock 
+from anthropic import Anthropic, APIError
 import re
 import unicodedata
 import nltk
