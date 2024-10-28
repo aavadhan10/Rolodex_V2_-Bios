@@ -129,7 +129,209 @@ def call_claude(messages):
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
+def load_and_clean_data(file_path, encoding='utf-8'):
+    """Load and clean the lawyer bio data"""
+    try:
+        data = pd.read_csv(file_path, encoding=encoding)
+    except UnicodeDecodeError:
+        # If UTF-8 fails, try latin-1
+        data = pd.read_csv(file_path, encoding='latin-1')
 
+    def clean_text(text):
+        if isinstance(text, str):
+            text = ''.join(char for char in text if char.isprintable())
+            text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+            text = text.replace('Ã¢ÂÂ', "'").replace('Ã¢ÂÂ¨', ", ")
+            text = re.sub(r'\\u[0-9a-fA-F]{4}', '', text)
+            text = re.sub(r'\s+', ' ', text).strip()
+        return text
+
+    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()
+    
+    for col in data.columns:
+        data[col] = data[col].apply(clean_text)
+    
+    # Map new column names to match the functionality
+    column_mappings = {
+        'First Name': 'First Name',
+        'Last Name': 'Last Name',
+        'Level/Title': 'Level/Title',
+        'Call': 'Call',
+        'Jurisdiction': 'Jurisdiction',
+        'Location': 'Location',
+        'Area of Practise + Add Info': 'Area of Practise + Add Info',
+        'Industry Experience': 'Industry Experience',
+        'Languages': 'Languages',
+        'Expert': 'Expert',
+        'Previous In-House Companies': 'Previous In-House Companies',
+        'Previous Companies/Firms': 'Previous Companies/Firms',
+        'Education': 'Education',
+        'Awards/Recognition': 'Awards/Recognition',
+        'City of Residence': 'City of Residence',
+        'Notable Items/Personal Details': 'Notable Items/Personal Details',
+        'Daily/Fractional Engagements': 'Daily/Fractional Engagements',
+        'Monthly Engagements (hours per month)': 'Monthly Engagements (hours per month)',
+        'Lawyer Bio Info': 'Lawyer Bio Info'
+    }
+    
+    data = data.rename(columns=column_mappings)
+    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
+    
+    return data
+
+def load_availability_data(file_path):
+    """Load and process availability data"""
+    availability_data = pd.read_csv(file_path)
+    availability_data.columns = [col.strip() for col in availability_data.columns]
+    availability_data['What is your name?'] = availability_data['What is your name?'].str.strip()
+    
+    availability_data['First Name'] = ''
+    availability_data['Last Name'] = ''
+    
+    for idx, row in availability_data.iterrows():
+        name_parts = str(row['What is your name?']).split()
+        if len(name_parts) >= 2:
+            availability_data.at[idx, 'First Name'] = name_parts[0]
+            availability_data.at[idx, 'Last Name'] = ' '.join(name_parts[1:])
+        elif len(name_parts) == 1:
+            availability_data.at[idx, 'First Name'] = name_parts[0]
+            availability_data.at[idx, 'Last Name'] = ''
+    
+    availability_data['First Name'] = availability_data['First Name'].str.strip()
+    availability_data['Last Name'] = availability_data['Last Name'].str.strip()
+    
+    return availability_data
+
+def get_availability_status(row, availability_data):
+    """Get availability status for a lawyer"""
+    if availability_data is None:
+        return "Unknown"
+        
+    lawyer = availability_data[
+        (availability_data['First Name'].str.strip() == row['First Name'].strip()) &
+        (availability_data['Last Name'].str.strip() == row['Last Name'].strip())
+    ]
+    
+    if lawyer.empty:
+        return "Unknown"
+        
+    can_take_work = lawyer['Do you have capacity to take on new work?'].iloc[0]
+    
+    if can_take_work == 'No':
+        return "Not Available"
+    elif can_take_work == 'Maybe':
+        return "Limited Availability"
+    
+    days_per_week = lawyer['What is your capacity to take on new work for the forseeable future? Days per week'].iloc[0]
+    hours_per_month = lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month'].iloc[0]
+    
+    days_per_week = str(days_per_week)
+    hours_per_month = str(hours_per_month)
+    
+    try:
+        if ';' in days_per_week:
+            day_numbers = []
+            for day_str in days_per_week.split(';'):
+                number = ''.join(filter(str.isdigit, day_str.strip()))
+                if number:
+                    day_numbers.append(int(number))
+            max_days = max(day_numbers) if day_numbers else 0
+        else:
+            number = ''.join(filter(str.isdigit, days_per_week))
+            max_days = int(number) if number else 0
+    except:
+        max_days = 0
+    
+    if max_days >= 4 and 'More than 80 hours' in hours_per_month:
+        return "High Availability"
+    elif max_days >= 2:
+        return "Moderate Availability"
+    else:
+        return "Low Availability"
+
+@st.cache_resource
+def create_weighted_vector_db(data):
+    """Create weighted vector database for lawyer matching"""
+    def weighted_text(row):
+        return ' '.join([
+            str(row['First Name']),
+            str(row['Last Name']),
+            str(row['Level/Title']),
+            str(row['Call']),
+            str(row['Jurisdiction']),
+            str(row['Location']),
+            str(row['Area of Practise + Add Info']),
+            str(row['Industry Experience']),
+            str(row['Languages']),
+            str(row['Previous In-House Companies']),
+            str(row['Previous Companies/Firms']),
+            str(row['Education']),
+            str(row['Awards/Recognition']),
+            str(row['City of Residence']),
+            str(row['Notable Items/Personal Details']),
+            str(row['Expert']),
+            str(row['Lawyer Bio Info'])
+        ])
+
+    combined_text = data.apply(weighted_text, axis=1)
+    vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+    X = vectorizer.fit_transform(combined_text)
+    X_normalized = normalize(X, norm='l2', axis=1, copy=False)
+    
+    index = faiss.IndexFlatIP(X.shape[1])
+    index.add(np.ascontiguousarray(X_normalized.toarray()))
+    return index, vectorizer
+
+def expand_query(query):
+    """Expand the query with synonyms and related words"""
+    expanded_query = []
+    for word, tag in nltk.pos_tag(nltk.word_tokenize(query)):
+        synsets = wordnet.synsets(word)
+        if synsets:
+            synonyms = set()
+            for synset in synsets:
+                synonyms.update(lemma.name().replace('_', ' ') for lemma in synset.lemmas())
+            expanded_query.extend(list(synonyms)[:3])
+        expanded_query.append(word)
+    return ' '.join(expanded_query)
+
+def normalize_query(query):
+    """Normalize the query by removing punctuation and converting to lowercase"""
+    query = re.sub(r'[^\w\s]', '', query)
+    return query.lower()
+
+def preprocess_query(query):
+    """Process and extract key terms from the query"""
+    tokens = word_tokenize(query)
+    tagged = pos_tag(tokens)
+    keywords = [word.lower() for word, pos in tagged if pos in ['NN', 'NNS', 'NNP', 'NNPS', 'JJ', 'JJR', 'JJS']]
+    stop_words = ['lawyer', 'best', 'top', 'find', 'me', 'give', 'who']
+    keywords = [word for word in keywords if word not in stop_words]
+    return keywords
+
+def keyword_search(data, query_keywords):
+    """Search for lawyers based on keywords"""
+    search_columns = ['Area of Practise + Add Info', 'Industry Experience', 'Expert', 'Lawyer Bio Info']
+    
+    def contains_any_term(text):
+        if not isinstance(text, str):
+            return False
+        text_lower = text.lower()
+        return any(term in text_lower for term in query_keywords)
+    
+    masks = [data[col].apply(contains_any_term) for col in search_columns]
+    final_mask = masks[0]
+    for mask in masks[1:]:
+        final_mask |= mask
+    
+    return data[final_mask]
+
+def calculate_relevance_score(text, query_keywords):
+    """Calculate relevance score for a piece of text"""
+    if not isinstance(text, str):
+        return 0
+    text_lower = text.lower()
+    return sum(text_lower.count(keyword) for keyword in query_keywords)
 def expand_query(query):
     """Expand the query with synonyms and related words."""
     expanded_query = []
