@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-from anthropic import Anthropic
+from anthropic import Anthropic, HUMAN_PROMPT, AI_PROMPT
 import re
 import unicodedata
 import nltk
@@ -94,13 +94,12 @@ def get_csv_download_link(df, filename="most_asked_queries.csv"):
         return ""
 
 def init_anthropic_client():
+    """Initialize Anthropic client with API key"""
     claude_api_key = st.secrets["CLAUDE_API_KEY"]
     if not claude_api_key:
         st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
         st.stop()
     return Anthropic(api_key=claude_api_key)
-
-client = init_anthropic_client()
 
 def load_and_clean_data(file_path, encoding='utf-8'):
     try:
@@ -261,26 +260,25 @@ def display_available_lawyers():
                 st.write("**Availability Notes:**")
                 st.write(notes)
 
+
 def call_claude(messages):
     try:
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
         
-        # Updated to use Claude 3.5 Sonnet
-        response = client.messages.create(
+        # Using the completion API with Claude 3.5 Sonnet
+        prompt = f"{system_message}\n\n{HUMAN_PROMPT} {user_message}\n\n{AI_PROMPT}"
+        
+        response = client.completions.create(
             model="claude-3-sonnet-20240229",
+            prompt=prompt,
             max_tokens=500,
-            temperature=0.7,
-            messages=[
-                {"role": "system", "content": system_message},
-                {"role": "user", "content": user_message}
-            ]
+            temperature=0.7
         )
-        return response.content[0].text
+        return response.completion
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
-
 
 def expand_query(query):
     """Expand the query with synonyms and related words."""
