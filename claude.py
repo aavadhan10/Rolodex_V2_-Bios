@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-from anthropic import Anthropic
+from anthropic import Anthropic, HUMAN_PROMPT, ASSISTANT_PROMPT
 import re
 import unicodedata
 import nltk
@@ -22,17 +22,15 @@ def safe_nltk_download(package):
     try:
         nltk.download(package, quiet=True)
     except FileExistsError:
-        pass  # Directory already exists, which is fine
+        pass
     except Exception as e:
         st.warning(f"Warning: Could not download NLTK package {package}. Error: {str(e)}")
 
 # Initialize NLTK downloads safely
 try:
-    # Create NLTK data directory if it doesn't exist
     nltk_data_dir = os.path.expanduser('~/nltk_data')
     os.makedirs(nltk_data_dir, exist_ok=True)
     
-    # Download required NLTK data
     safe_nltk_download('wordnet')
     safe_nltk_download('averaged_perceptron_tagger')
     safe_nltk_download('punkt')
@@ -45,13 +43,11 @@ def log_query_and_result(query, result):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
-        # Create the file with headers if it doesn't exist
         if not os.path.exists(log_file):
             with open(log_file, "w", newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(["Timestamp", "Query", "Result"])
         
-        # Append the new query and result
         with open(log_file, "a", newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([timestamp, query, result])
@@ -102,178 +98,28 @@ def init_anthropic_client():
 
 client = init_anthropic_client()
 
-def load_and_clean_data(file_path, encoding='utf-8'):
-    try:
-        data = pd.read_csv(file_path, encoding=encoding)
-    except UnicodeDecodeError:
-        # If UTF-8 fails, try latin-1
-        data = pd.read_csv(file_path, encoding='latin-1')
-
-    def clean_text(text):
-        if isinstance(text, str):
-            text = ''.join(char for char in text if char.isprintable())
-            text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
-            text = text.replace('Ã¢ÂÂ', "'").replace('Ã¢ÂÂ¨', ", ")
-            text = re.sub(r'\\u[0-9a-fA-F]{4}', '', text)
-            text = re.sub(r'\s+', ' ', text).strip()
-        return text
-
-    data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()
-    
-    for col in data.columns:
-        data[col] = data[col].apply(clean_text)
-    
-    # Map new column names to match the functionality
-    column_mappings = {
-        'First Name': 'First Name',
-        'Last Name': 'Last Name',
-        'Level/Title': 'Level/Title',
-        'Call': 'Call',
-        'Jurisdiction': 'Jurisdiction',
-        'Location': 'Location',
-        'Area of Practise + Add Info': 'Area of Practise + Add Info',
-        'Industry Experience': 'Industry Experience',
-        'Languages': 'Languages',
-        'Expert': 'Expert',
-        'Previous In-House Companies': 'Previous In-House Companies',
-        'Previous Companies/Firms': 'Previous Companies/Firms',
-        'Education': 'Education',
-        'Awards/Recognition': 'Awards/Recognition',
-        'City of Residence': 'City of Residence',
-        'Notable Items/Personal Details': 'Notable Items/Personal Details',
-        'Daily/Fractional Engagements': 'Daily/Fractional Engagements',
-        'Monthly Engagements (hours per month)': 'Monthly Engagements (hours per month)',
-        'Lawyer Bio Info': 'Lawyer Bio Info'
-    }
-    
-    data = data.rename(columns=column_mappings)
-    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
-    
-    return data
-
-def load_availability_data(file_path):
-    availability_data = pd.read_csv(file_path)
-    availability_data.columns = [col.strip() for col in availability_data.columns]
-    availability_data['What is your name?'] = availability_data['What is your name?'].str.strip()
-    
-    availability_data['First Name'] = ''
-    availability_data['Last Name'] = ''
-    
-    for idx, row in availability_data.iterrows():
-        name_parts = str(row['What is your name?']).split()
-        if len(name_parts) >= 2:
-            availability_data.at[idx, 'First Name'] = name_parts[0]
-            availability_data.at[idx, 'Last Name'] = ' '.join(name_parts[1:])
-        elif len(name_parts) == 1:
-            availability_data.at[idx, 'First Name'] = name_parts[0]
-            availability_data.at[idx, 'Last Name'] = ''
-    
-    availability_data['First Name'] = availability_data['First Name'].str.strip()
-    availability_data['Last Name'] = availability_data['Last Name'].str.strip()
-    
-    return availability_data
-
-def get_availability_status(row, availability_data):
-    """Get availability status for a lawyer"""
-    if availability_data is None:
-        return "Unknown"
-        
-    lawyer = availability_data[
-        (availability_data['First Name'].str.strip() == row['First Name'].strip()) &
-        (availability_data['Last Name'].str.strip() == row['Last Name'].strip())
-    ]
-    
-    if lawyer.empty:
-        return "Unknown"
-        
-    can_take_work = lawyer['Do you have capacity to take on new work?'].iloc[0]
-    
-    if can_take_work == 'No':
-        return "Not Available"
-    elif can_take_work == 'Maybe':
-        return "Limited Availability"
-    
-    days_per_week = lawyer['What is your capacity to take on new work for the forseeable future? Days per week'].iloc[0]
-    hours_per_month = lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month'].iloc[0]
-    
-    days_per_week = str(days_per_week)
-    hours_per_month = str(hours_per_month)
-    
-    try:
-        if ';' in days_per_week:
-            day_numbers = []
-            for day_str in days_per_week.split(';'):
-                number = ''.join(filter(str.isdigit, day_str.strip()))
-                if number:
-                    day_numbers.append(int(number))
-            max_days = max(day_numbers) if day_numbers else 0
-        else:
-            number = ''.join(filter(str.isdigit, days_per_week))
-            max_days = int(number) if number else 0
-    except:
-        max_days = 0
-    
-    if max_days >= 4 and 'More than 80 hours' in hours_per_month:
-        return "High Availability"
-    elif max_days >= 2:
-        return "Moderate Availability"
-    else:
-        return "Low Availability"
-
-def display_available_lawyers():
-    """Display all available lawyers and their capacity"""
-    availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
-    matters_data = load_and_clean_data('Updated_Lawyer_Bio_Data.csv')
-    
-    available_lawyers = availability_data[availability_data['Do you have capacity to take on new work?'].isin(['Yes', 'Maybe'])]
-    
-    st.write("### Currently Available Lawyers")
-    
-    for _, lawyer in available_lawyers.iterrows():
-        name = f"{lawyer['First Name']} {lawyer['Last Name']}"
-        
-        lawyer_info = matters_data[
-            (matters_data['First Name'] == lawyer['First Name']) & 
-            (matters_data['Last Name'] == lawyer['Last Name'])
-        ]
-        
-        practice_areas = lawyer_info['Area of Practise + Add Info'].iloc[0] if not lawyer_info.empty else "Information not available"
-        
-        with st.expander(f"🧑‍⚖️ {name} - {'Ready for New Work' if lawyer['Do you have capacity to take on new work?'] == 'Yes' else 'Limited Availability'}"):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.write("**Availability Details:**")
-                st.write(f"• Days per week: {lawyer['What is your capacity to take on new work for the forseeable future? Days per week']}")
-                st.write(f"• Hours per month: {lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month']}")
-                st.write(f"• Preferred engagement types: {lawyer['What type of engagement would you like to consider?']}")
-            
-            with col2:
-                st.write("**Practice Areas:**")
-                st.write(practice_areas)
-                
-                if not lawyer_info.empty and pd.notna(lawyer_info['Lawyer Bio Info'].iloc[0]):
-                    st.write("**Bio Information:**")
-                    st.write(lawyer_info['Lawyer Bio Info'].iloc[0])
-            
-            notes = lawyer['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?']
-            if pd.notna(notes) and notes.lower() not in ['no', 'n/a', 'none', 'nil']:
-                st.write("**Availability Notes:**")
-                st.write(notes)
-
 def call_claude(messages):
     try:
-        system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
-        user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
-        prompt = f"{system_message}\n\nHuman: {user_message}\n\nAssistant:"
-
-        response = client.completions.create(
-            model="claude-2.1",
-            prompt=prompt,
-            max_tokens_to_sample=500,
+        # Convert the messages format to Claude 3's expected format
+        formatted_messages = []
+        for msg in messages:
+            if msg['role'] == 'system':
+                # For Claude 3, we'll add system message as a special prefix to the first user message
+                continue
+            formatted_messages.append({
+                "role": "assistant" if msg['role'] == 'assistant' else "user",
+                "content": msg['content']
+            })
+            
+        # Create the message with Claude 3.5
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            messages=formatted_messages,
+            max_tokens=1024,
             temperature=0.7
         )
-        return response.completion
+        
+        return response.content[0].text
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
