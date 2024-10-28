@@ -95,12 +95,19 @@ def get_csv_download_link(df, filename="most_asked_queries.csv"):
 
 def init_anthropic_client():
     """Initialize Anthropic client with API key"""
-    claude_api_key = st.secrets["CLAUDE_API_KEY"]
-    if not claude_api_key:
-        st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
+    try:
+        claude_api_key = st.secrets["CLAUDE_API_KEY"]
+        if not claude_api_key:
+            st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
+            st.stop()
+        return Anthropic(api_key=claude_api_key)
+    except Exception as e:
+        st.error(f"Error initializing Anthropic client: {e}")
         st.stop()
-    return Anthropic(api_key=claude_api_key)
+
+# Create the client instance
 client = init_anthropic_client()
+
 
 def load_and_clean_data(file_path, encoding='utf-8'):
     try:
@@ -271,7 +278,7 @@ def call_claude(messages):
         response = client.completions.create(
             model="claude-3-sonnet-20240229",
             prompt=f"{system_message}\n\nHuman: {user_message}\n\nAssistant:",
-            max_tokens=500,
+            max_tokens_to_sample=500,  # Changed from max_tokens to max_tokens_to_sample
             temperature=0.7
         )
         return response.completion
