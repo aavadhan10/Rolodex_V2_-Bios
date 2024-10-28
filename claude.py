@@ -373,6 +373,7 @@ def create_weighted_vector_db(data):
     index.add(np.ascontiguousarray(X_normalized.toarray()))
     return index, vectorizer
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
+    """Query Claude with data and handle semantic search properly"""
     # Load availability data
     availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
     
@@ -384,22 +385,28 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     
     # If keyword search yields results, use them. Otherwise, use all data.
     if not keyword_results.empty:
-        relevant_data = keyword_results.copy()  # Make a copy to avoid warnings
+        relevant_data = keyword_results.copy()
     else:
-        relevant_data = matters_data.copy()  # Make a copy to avoid warnings
+        relevant_data = matters_data.copy()
 
     # Calculate keyword-based relevance scores
     relevant_data.loc[:, 'keyword_score'] = relevant_data.apply(
         lambda row: calculate_relevance_score(' '.join(row.astype(str)), query_keywords), axis=1
     )
 
-    # Perform semantic search
+    # Perform semantic search with proper size limitation
     question_vec = matters_vectorizer.transform([' '.join(query_keywords)])
-    D, I = matters_index.search(normalize(question_vec).toarray(), k=len(relevant_data))
+    k = min(len(relevant_data), 10)  # Limit k to the size of our dataset or 10, whichever is smaller
+    D, I = matters_index.search(normalize(question_vec).toarray(), k=k)
     
-    # Add semantic relevance scores
+    # Initialize semantic scores
     relevant_data.loc[:, 'semantic_score'] = 0
-    relevant_data.loc[relevant_data.index[I[0]], 'semantic_score'] = 1 / (1 + D[0])
+    
+    # Safely assign semantic scores only to valid indices
+    valid_indices = [idx for idx in I[0] if idx < len(relevant_data)]
+    if valid_indices:
+        scores = 1 / (1 + D[0][:len(valid_indices)])
+        relevant_data.iloc[valid_indices, relevant_data.columns.get_loc('semantic_score')] = scores
 
     # Calculate final relevance score
     relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
@@ -422,24 +429,6 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     relevant_data.loc[:, 'availability_weight'] = relevant_data['availability_status'].map(availability_weights)
     relevant_data.loc[:, 'final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
 
-    # Add availability information
-    relevant_data['availability_status'] = relevant_data.apply(
-        lambda row: get_availability_status(row, availability_data), axis=1
-    )
-    
-    # Adjust relevance score based on availability
-    availability_weights = {
-        "High Availability": 1.0,
-        "Moderate Availability": 0.8,
-        "Low Availability": 0.6,
-        "Limited Availability": 0.4,
-        "Not Available": 0.1,
-        "Unknown": 0.5
-    }
-    
-    relevant_data['availability_weight'] = relevant_data['availability_status'].map(availability_weights)
-    relevant_data['final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
-
     # Sort by final score
     relevant_data = relevant_data.sort_values('final_score', ascending=False)
 
@@ -447,8 +436,21 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     top_lawyers = relevant_data[['First Name', 'Last Name']].drop_duplicates().head(10)
 
     # Get all matters for top lawyers, sorted by relevance
-    top_relevant_data = relevant_data[relevant_data[['First Name', 'Last Name']].apply(tuple, axis=1).isin(top_lawyers.apply(tuple, axis=1))]
-    top_relevant_data = top_relevant_data.sort_values('final_score', ascending=False)
+    top_relevant_data = relevant_data[
+        relevant_data[['First Name', 'Last Name']].apply(tuple, axis=1).isin(
+            top_lawyers.apply(tuple, axis=1)
+        )
+    ].sort_values('final_score', ascending=False)
+
+    # [Rest of the function remains the same]
+    return top_relevant_data  # Make sure to return the processed data
+
+    
+
+
+
+
+    
 
     # Include availability status and bio info in the output
     primary_info = top_relevant_data[['First Name', 'Last Name', 'Level/Title', 'Call', 'Jurisdiction', 'Location', 
