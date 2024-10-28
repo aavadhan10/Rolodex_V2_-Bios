@@ -425,19 +425,25 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
 
     # Perform semantic search with safety checks
     question_vec = matters_vectorizer.transform([' '.join(query_keywords)])
-    D, I = matters_index.search(normalize(question_vec).toarray(), k=min(len(relevant_data), 100))  # Limit to prevent out of bounds
+    normalized_vec = normalize(question_vec).toarray()
     
-    # Add semantic relevance scores - fixed assignment
-    semantic_scores = 1 / (1 + D[0])
-    relevant_data.loc[:, 'semantic_score'] = 0  # Initialize scores
-    
-    # Create a boolean mask for the indices
-    valid_indices = I[0] < len(relevant_data)
-    valid_I = I[0][valid_indices]
-    valid_scores = semantic_scores[valid_indices]
-    
-    # Use index locations to assign scores
-    relevant_data.iloc[valid_I, relevant_data.columns.get_loc('semantic_score')] = valid_scores
+    # Limit k to the actual number of rows in relevant_data
+    k = min(len(relevant_data), 100)
+    if k > 0:  # Only perform search if we have data
+        D, I = matters_index.search(normalized_vec, k)
+        
+        # Add semantic relevance scores - fixed assignment
+        semantic_scores = 1 / (1 + D[0])
+        relevant_data.loc[:, 'semantic_score'] = 0  # Initialize scores
+        
+        # Create index mapping
+        df_indices = relevant_data.index.tolist()
+        for idx, score in zip(I[0], semantic_scores):
+            if idx < len(df_indices):
+                relevant_data.loc[df_indices[idx], 'semantic_score'] = score
+    else:
+        # If no data, initialize semantic_score column to 0
+        relevant_data.loc[:, 'semantic_score'] = 0
 
     # Calculate final relevance score
     relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
@@ -500,36 +506,34 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         for name, details in availability_details.items()
     )
 
-    # Format messages for Claude 3.5
+    # Create system prompt and user message for Claude
+    system_prompt = """You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. 
+    Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. 
+    Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience 
+    of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. 
+    Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."""
+
+    user_message = f"""Core query keywords: {', '.join(query_keywords)}
+    Original question: {question}
+
+    Top Lawyers Information:
+    {primary_context}
+
+    Relevant Areas of Practice (including relevance scores):
+    {secondary_context}
+    {availability_context}
+
+    Based on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. 
+    Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience 
+    and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). 
+    If no lawyers have both relevant experience and availability, explain this clearly."""
+
+    # Call Claude with completions API format
     messages = [
-        {
-            "role": "system",
-            "content": """You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. 
-            Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. 
-            Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience 
-            of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. 
-            Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."""
-        },
-        {
-            "role": "user",
-            "content": f"""Core query keywords: {', '.join(query_keywords)}
-            Original question: {question}
-
-            Top Lawyers Information:
-            {primary_context}
-
-            Relevant Areas of Practice (including relevance scores):
-            {secondary_context}
-            {availability_context}
-
-            Based on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. 
-            Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience 
-            and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). 
-            If no lawyers have both relevant experience and availability, explain this clearly."""
-        }
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_message}
     ]
-
-    # Call Claude 3.5 with the new message format
+    
     claude_response = call_claude(messages)
     if not claude_response:
         return
@@ -600,7 +604,6 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
 
     else:
         st.write("No lawyers with relevant experience were found for this query.")
-
 
 # Streamlit app layout
 st.title("Rolodex Caravel Version 2 Lawyer Bio 👨‍⚖️ Utilizing Claude 3.5")
