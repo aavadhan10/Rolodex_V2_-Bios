@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-from anthropic import Anthropic, APIError
+from anthropic import Anthropic
 import re
 import unicodedata
 import nltk
@@ -22,14 +22,17 @@ def safe_nltk_download(package):
     try:
         nltk.download(package, quiet=True)
     except FileExistsError:
-        pass
+        pass  # Directory already exists, which is fine
     except Exception as e:
         st.warning(f"Warning: Could not download NLTK package {package}. Error: {str(e)}")
 
 # Initialize NLTK downloads safely
 try:
+    # Create NLTK data directory if it doesn't exist
     nltk_data_dir = os.path.expanduser('~/nltk_data')
     os.makedirs(nltk_data_dir, exist_ok=True)
+    
+    # Download required NLTK data
     safe_nltk_download('wordnet')
     safe_nltk_download('averaged_perceptron_tagger')
     safe_nltk_download('punkt')
@@ -42,11 +45,13 @@ def log_query_and_result(query, result):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     try:
+        # Create the file with headers if it doesn't exist
         if not os.path.exists(log_file):
             with open(log_file, "w", newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
                 writer.writerow(["Timestamp", "Query", "Result"])
         
+        # Append the new query and result
         with open(log_file, "a", newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([timestamp, query, result])
@@ -87,62 +92,63 @@ def get_csv_download_link(df, filename="most_asked_queries.csv"):
     except Exception as e:
         st.warning(f"Error creating download link: {str(e)}")
         return ""
-        
+
 def init_anthropic_client():
-    """Initialize Anthropic client with API key"""
-    try:
-        claude_api_key = st.secrets["CLAUDE_API_KEY"]
-        if not claude_api_key:
-            st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
-            st.stop()
-        return Anthropic(api_key=claude_api_key)
-    except Exception as e:
-        st.error(f"Error initializing Anthropic client: {e}")
+    claude_api_key = st.secrets["CLAUDE_API_KEY"]
+    if not claude_api_key:
+        st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
         st.stop()
+    return Anthropic(api_key=claude_api_key)
 
-# Create the client instance
 client = init_anthropic_client()
-
-def call_claude(messages):
-    """Call Claude API using Messages format"""
-    try:
-        system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
-        user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
-        
-        # Using the Completion API format required for Claude 3.5
-        response = client.completions.create(
-            model="claude-3-sonnet-20240229",
-            prompt=f"{system_message}\n{user_message}",
-            temperature=0.7,
-            max_tokens_to_sample=500
-        )
-        
-        return response.completion
-    except APIError as e:
-        st.error(f"API Error: {e}")
-        return None
-    except Exception as e:
-        st.error(f"Error calling Claude: {e}")
-        return None
 
 def load_and_clean_data(file_path, encoding='utf-8'):
     try:
         data = pd.read_csv(file_path, encoding=encoding)
     except UnicodeDecodeError:
+        # If UTF-8 fails, try latin-1
         data = pd.read_csv(file_path, encoding='latin-1')
 
     def clean_text(text):
         if isinstance(text, str):
             text = ''.join(char for char in text if char.isprintable())
             text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('ascii')
+            text = text.replace('Ã¢ÂÂ', "'").replace('Ã¢ÂÂ¨', ", ")
             text = re.sub(r'\\u[0-9a-fA-F]{4}', '', text)
             text = re.sub(r'\s+', ' ', text).strip()
         return text
 
     data.columns = data.columns.str.replace('ï»¿', '').str.replace('Ã', '').str.strip()
+    
     for col in data.columns:
         data[col] = data[col].apply(clean_text)
-
+    
+    # Map new column names to match the functionality
+    column_mappings = {
+        'First Name': 'First Name',
+        'Last Name': 'Last Name',
+        'Level/Title': 'Level/Title',
+        'Call': 'Call',
+        'Jurisdiction': 'Jurisdiction',
+        'Location': 'Location',
+        'Area of Practise + Add Info': 'Area of Practise + Add Info',
+        'Industry Experience': 'Industry Experience',
+        'Languages': 'Languages',
+        'Expert': 'Expert',
+        'Previous In-House Companies': 'Previous In-House Companies',
+        'Previous Companies/Firms': 'Previous Companies/Firms',
+        'Education': 'Education',
+        'Awards/Recognition': 'Awards/Recognition',
+        'City of Residence': 'City of Residence',
+        'Notable Items/Personal Details': 'Notable Items/Personal Details',
+        'Daily/Fractional Engagements': 'Daily/Fractional Engagements',
+        'Monthly Engagements (hours per month)': 'Monthly Engagements (hours per month)',
+        'Lawyer Bio Info': 'Lawyer Bio Info'
+    }
+    
+    data = data.rename(columns=column_mappings)
+    data = data.loc[:, ~data.columns.str.contains('^Unnamed')]
+    
     return data
 
 def load_availability_data(file_path):
@@ -168,6 +174,7 @@ def load_availability_data(file_path):
     return availability_data
 
 def get_availability_status(row, availability_data):
+    """Get availability status for a lawyer"""
     if availability_data is None:
         return "Unknown"
         
@@ -189,9 +196,21 @@ def get_availability_status(row, availability_data):
     days_per_week = lawyer['What is your capacity to take on new work for the forseeable future? Days per week'].iloc[0]
     hours_per_month = lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month'].iloc[0]
     
+    days_per_week = str(days_per_week)
+    hours_per_month = str(hours_per_month)
+    
     try:
-        max_days = max(int(day) for day in re.findall(r'\d+', str(days_per_week)))
-    except ValueError:
+        if ';' in days_per_week:
+            day_numbers = []
+            for day_str in days_per_week.split(';'):
+                number = ''.join(filter(str.isdigit, day_str.strip()))
+                if number:
+                    day_numbers.append(int(number))
+            max_days = max(day_numbers) if day_numbers else 0
+        else:
+            number = ''.join(filter(str.isdigit, days_per_week))
+            max_days = int(number) if number else 0
+    except:
         max_days = 0
     
     if max_days >= 4 and 'More than 80 hours' in hours_per_month:
@@ -201,7 +220,66 @@ def get_availability_status(row, availability_data):
     else:
         return "Low Availability"
 
+def display_available_lawyers():
+    """Display all available lawyers and their capacity"""
+    availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
+    matters_data = load_and_clean_data('Updated_Lawyer_Bio_Data.csv')
+    
+    available_lawyers = availability_data[availability_data['Do you have capacity to take on new work?'].isin(['Yes', 'Maybe'])]
+    
+    st.write("### Currently Available Lawyers")
+    
+    for _, lawyer in available_lawyers.iterrows():
+        name = f"{lawyer['First Name']} {lawyer['Last Name']}"
+        
+        lawyer_info = matters_data[
+            (matters_data['First Name'] == lawyer['First Name']) & 
+            (matters_data['Last Name'] == lawyer['Last Name'])
+        ]
+        
+        practice_areas = lawyer_info['Area of Practise + Add Info'].iloc[0] if not lawyer_info.empty else "Information not available"
+        
+        with st.expander(f"🧑‍⚖️ {name} - {'Ready for New Work' if lawyer['Do you have capacity to take on new work?'] == 'Yes' else 'Limited Availability'}"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.write("**Availability Details:**")
+                st.write(f"• Days per week: {lawyer['What is your capacity to take on new work for the forseeable future? Days per week']}")
+                st.write(f"• Hours per month: {lawyer['What is your capacity to take on new work for the foreseeable future? Hours per month']}")
+                st.write(f"• Preferred engagement types: {lawyer['What type of engagement would you like to consider?']}")
+            
+            with col2:
+                st.write("**Practice Areas:**")
+                st.write(practice_areas)
+                
+                if not lawyer_info.empty and pd.notna(lawyer_info['Lawyer Bio Info'].iloc[0]):
+                    st.write("**Bio Information:**")
+                    st.write(lawyer_info['Lawyer Bio Info'].iloc[0])
+            
+            notes = lawyer['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?']
+            if pd.notna(notes) and notes.lower() not in ['no', 'n/a', 'none', 'nil']:
+                st.write("**Availability Notes:**")
+                st.write(notes)
+
+def call_claude(messages):
+    try:
+        system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
+        user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
+        prompt = f"{system_message}\n\nHuman: {user_message}\n\nAssistant:"
+
+        response = client.completions.create(
+            model="claude-2.1",
+            prompt=prompt,
+            max_tokens_to_sample=500,
+            temperature=0.7
+        )
+        return response.completion
+    except Exception as e:
+        st.error(f"Error calling Claude: {e}")
+        return None
+
 def expand_query(query):
+    """Expand the query with synonyms and related words."""
     expanded_query = []
     for word, tag in nltk.pos_tag(nltk.word_tokenize(query)):
         synsets = wordnet.synsets(word)
@@ -214,10 +292,12 @@ def expand_query(query):
     return ' '.join(expanded_query)
 
 def normalize_query(query):
+    """Normalize the query by removing punctuation and converting to lowercase."""
     query = re.sub(r'[^\w\s]', '', query)
     return query.lower()
 
 def preprocess_query(query):
+    """Process and extract key terms from the query."""
     tokens = word_tokenize(query)
     tagged = pos_tag(tokens)
     keywords = [word.lower() for word, pos in tagged if pos in ['NN', 'NNS', 'NNP', 'NNPS', 'JJ', 'JJR', 'JJS']]
@@ -278,30 +358,45 @@ def create_weighted_vector_db(data):
     index = faiss.IndexFlatIP(X.shape[1])
     index.add(np.ascontiguousarray(X_normalized.toarray()))
     return index, vectorizer
-
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
+    # Load availability data
     availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
+    
+    # Preprocess the question
     query_keywords = preprocess_query(question)
+    
+    # Perform keyword search
     keyword_results = keyword_search(matters_data, query_keywords)
     
-    relevant_data = keyword_results.copy() if not keyword_results.empty else matters_data.copy()
+    # If keyword search yields results, use them. Otherwise, use all data.
+    if not keyword_results.empty:
+        relevant_data = keyword_results
+    else:
+        relevant_data = matters_data
 
+    # Calculate keyword-based relevance scores
     relevant_data['keyword_score'] = relevant_data.apply(
         lambda row: calculate_relevance_score(' '.join(row.astype(str)), query_keywords), axis=1
     )
 
+    # Perform semantic search
     question_vec = matters_vectorizer.transform([' '.join(query_keywords)])
-    k = min(len(relevant_data), 10)
-    D, I = matters_index.search(normalize(question_vec).toarray(), k=k)
+    D, I = matters_index.search(normalize(question_vec).toarray(), k=len(relevant_data))
     
+    # Add semantic relevance scores
+    semantic_scores = 1 / (1 + D[0])
     relevant_data['semantic_score'] = 0
-    valid_indices = [idx for idx in I[0] if idx < len(relevant_data)]
-    if valid_indices:
-        scores = 1 / (1 + D[0][:len(valid_indices)])
-        relevant_data.iloc[valid_indices, relevant_data.columns.get_loc('semantic_score')] = scores
+    relevant_data.iloc[I[0], relevant_data.columns.get_loc('semantic_score')] = semantic_scores
 
+    # Calculate final relevance score
     relevant_data['relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
 
+    # Add availability information
+    relevant_data['availability_status'] = relevant_data.apply(
+        lambda row: get_availability_status(row, availability_data), axis=1
+    )
+    
+    # Adjust relevance score based on availability
     availability_weights = {
         "High Availability": 1.0,
         "Moderate Availability": 0.8,
@@ -310,30 +405,131 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         "Not Available": 0.1,
         "Unknown": 0.5
     }
+    
     relevant_data['availability_weight'] = relevant_data['availability_status'].map(availability_weights)
     relevant_data['final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
 
-    top_relevant_data = relevant_data.sort_values('final_score', ascending=False)
+    # Sort by final score
+    relevant_data = relevant_data.sort_values('final_score', ascending=False)
+
+    # Get top 10 unique lawyers
+    top_lawyers = relevant_data[['First Name', 'Last Name']].drop_duplicates().head(10)
+
+    # Get all matters for top lawyers, sorted by relevance
+    top_relevant_data = relevant_data[relevant_data[['First Name', 'Last Name']].apply(tuple, axis=1).isin(top_lawyers.apply(tuple, axis=1))]
+    top_relevant_data = top_relevant_data.sort_values('final_score', ascending=False)
+
+    # Include availability status and bio info in the output
     primary_info = top_relevant_data[['First Name', 'Last Name', 'Level/Title', 'Call', 'Jurisdiction', 'Location', 
                                     'Area of Practise + Add Info', 'Industry Experience', 'Education', 'availability_status', 
                                     'Lawyer Bio Info']].drop_duplicates(subset=['First Name', 'Last Name'])
+    
+    secondary_info = top_relevant_data[['First Name', 'Last Name', 'Area of Practise + Add Info', 'Industry Experience', 
+                                      'final_score', 'availability_status', 'Lawyer Bio Info']].drop_duplicates(subset=['First Name', 'Last Name'])
+    
+    # Get detailed availability information for recommended lawyers
+    availability_details = {}
+    for _, lawyer in primary_info.iterrows():
+        lawyer_availability = availability_data[
+            (availability_data['First Name'] == lawyer['First Name']) & 
+            (availability_data['Last Name'] == lawyer['Last Name'])
+        ]
+        if not lawyer_availability.empty:
+            availability_details[f"{lawyer['First Name']} {lawyer['Last Name']}"] = {
+                'engagement_types': lawyer_availability['What type of engagement would you like to consider?'].iloc[0],
+                'days_per_week': lawyer_availability['What is your capacity to take on new work for the forseeable future? Days per week'].iloc[0],
+                'hours_per_month': lawyer_availability['What is your capacity to take on new work for the foreseeable future? Hours per month'].iloc[0],
+                'comments': lawyer_availability['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?'].iloc[0]
+            }
+
+    primary_context = primary_info.to_string(index=False)
+    secondary_context = secondary_info.to_string(index=False)
+    availability_context = "\n\nDetailed Availability Information:\n" + "\n".join(
+        f"{name}:\n- Engagement Types: {details['engagement_types']}\n- Days per week: {details['days_per_week']}\n- Hours per month: {details['hours_per_month']}\n- Availability Notes: {details['comments']}"
+        for name, details in availability_details.items()
+    )
 
     messages = [
-        {"role": "system", "content": "You are an expert legal consultant..."},
-        {"role": "user", "content": f"Core query keywords: {', '.join(query_keywords)}\nOriginal question: {question}\n\nTop Lawyers Information:\n{primary_info.to_string(index=False)}"}
+        {"role": "system", "content": "You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."},
+        {"role": "user", "content": f"Core query keywords: {', '.join(query_keywords)}\nOriginal question: {question}\n\nTop Lawyers Information:\n{primary_context}\n\nRelevant Areas of Practice (including relevance scores):\n{secondary_context}\n{availability_context}\n\nBased on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). If no lawyers have both relevant experience and availability, explain this clearly."}
     ]
 
     claude_response = call_claude(messages)
     if not claude_response:
         return
+
+    # Log the query and result
     log_query_and_result(question, claude_response)
+
+    # Display section - Only showing recommendations
     st.write("### Claude's Recommendation:")
     st.write(claude_response)
+
+    if not primary_info.empty:
+        # Extract names of recommended lawyers from Claude's response in order
+        response_text = claude_response.lower()
+        recommended_lawyers = []
+        
+        # Get all lawyers mentioned in Claude's response in the order they appear
+        for _, lawyer in primary_info.iterrows():
+            full_name = f"{lawyer['First Name']} {lawyer['Last Name']}"
+            if full_name.lower() in response_text:
+                position = response_text.find(full_name.lower())
+                recommended_lawyers.append((position, lawyer))
+        
+        recommended_lawyers.sort(key=lambda x: x[0])
+        recommended_lawyers = [lawyer for _, lawyer in recommended_lawyers]
+
+        if recommended_lawyers:
+            st.write("### Availability Details for Recommended Lawyer(s):")
+            availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
+            
+            for lawyer in recommended_lawyers:
+                lawyer_availability = availability_data[
+                    (availability_data['First Name'] == lawyer['First Name']) & 
+                    (availability_data['Last Name'] == lawyer['Last Name'])
+                ]
+                
+                if not lawyer_availability.empty:
+                    name = f"{lawyer['First Name']} {lawyer['Last Name']}"
+                    with st.expander(f"🧑‍⚖️ {name} - {'Ready for New Work' if lawyer_availability['Do you have capacity to take on new work?'].iloc[0] == 'Yes' else 'Limited Availability'}"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write("**Availability Details:**")
+                            st.write(f"• Days per week: {lawyer_availability['What is your capacity to take on new work for the forseeable future? Days per week'].iloc[0]}")
+                            st.write(f"• Hours per month: {lawyer_availability['What is your capacity to take on new work for the foreseeable future? Hours per month'].iloc[0]}")
+                            st.write(f"• Preferred engagement types: {lawyer_availability['What type of engagement would you like to consider?'].iloc[0]}")
+                        
+                        with col2:
+                            st.write("**Practice Areas:**")
+                            st.write(lawyer['Area of Practise + Add Info'])
+                            
+                            if pd.notna(lawyer['Lawyer Bio Info']):
+                                st.write("**Bio Information:**")
+                                st.write(lawyer['Lawyer Bio Info'])
+                        
+                        notes = lawyer_availability['Do you have any comments or instructions you should let us know about that may impact your short/long-term availability? For instance, are you going on vacation (please provide exact dates)?'].iloc[0]
+                        if pd.notna(notes) and notes.lower() not in ['no', 'n/a', 'none', 'nil']:
+                            st.write("**Availability Notes:**")
+                            st.write(notes)
+
+            # Create ordered DataFrame based on Claude's recommendation order
+            recommended_df = pd.DataFrame([{
+                col: lawyer[col] for col in primary_info.columns
+            } for lawyer in recommended_lawyers])
+            
+            st.write("### Recommended Lawyers Info:")
+            st.write(recommended_df.to_html(index=False), unsafe_allow_html=True)
+
+    else:
+        st.write("No lawyers with relevant experience were found for this query.")
 
 # Streamlit app layout
 st.title("Rolodex Caravel Version 2 Lawyer Bio 👨‍⚖️ Utilizing Claude 3.5")
 st.write("Ask questions about the skill-matched lawyers for your specific legal needs and their availability:")
 
+# Add tabs for different views
 tab1, tab2 = st.tabs(["Search Lawyers by Skillset", "View Available Lawyers Week (Updated 10/23/24)"])
 
 with tab1:
