@@ -114,15 +114,15 @@ def call_claude(messages):
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
         
-        response = client.messages.create(
+        prompt = f"{system_message}\n\nHuman: {user_message}\n\nAssistant:"
+        
+        response = client.completions.create(
             model="claude-3-sonnet-20240229",
-            system=system_message,
-            messages=[{
-                "role": "user",
-                "content": user_message
-            }]
+            prompt=prompt,
+            max_tokens_to_sample=500,
+            temperature=0.7
         )
-        return response.content[0].text
+        return response.completion
     except APIError as e:
         st.error(f"API Error: {e}")
         return None
