@@ -275,19 +275,22 @@ def call_claude(messages):
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
         
-        response = client.completions.create(
+        response = client.messages.create(
             model="claude-3-sonnet-20240229",
-            prompt=f"{system_message}\n\nHuman: {user_message}\n\nAssistant:",
-            max_tokens_to_sample=500,
-            temperature=0.7
+            system=system_message,
+            messages=[{
+                "role": "user",
+                "content": user_message
+            }]
         )
-        return response.completion
+        return response.content[0].text
     except APIError as e:
         st.error(f"API Error: {e}")
         return None
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
+
 
 def expand_query(query):
     """Expand the query with synonyms and related words."""
@@ -381,12 +384,12 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     
     # If keyword search yields results, use them. Otherwise, use all data.
     if not keyword_results.empty:
-        relevant_data = keyword_results
+        relevant_data = keyword_results.copy()  # Make a copy to avoid warnings
     else:
-        relevant_data = matters_data
+        relevant_data = matters_data.copy()  # Make a copy to avoid warnings
 
     # Calculate keyword-based relevance scores
-    relevant_data['keyword_score'] = relevant_data.apply(
+    relevant_data.loc[:, 'keyword_score'] = relevant_data.apply(
         lambda row: calculate_relevance_score(' '.join(row.astype(str)), query_keywords), axis=1
     )
 
@@ -395,12 +398,29 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
     D, I = matters_index.search(normalize(question_vec).toarray(), k=len(relevant_data))
     
     # Add semantic relevance scores
-    semantic_scores = 1 / (1 + D[0])
-    relevant_data['semantic_score'] = 0
-    relevant_data.iloc[I[0], relevant_data.columns.get_loc('semantic_score')] = semantic_scores
+    relevant_data.loc[:, 'semantic_score'] = 0
+    relevant_data.loc[relevant_data.index[I[0]], 'semantic_score'] = 1 / (1 + D[0])
 
     # Calculate final relevance score
-    relevant_data['relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
+    relevant_data.loc[:, 'relevance_score'] = (relevant_data['keyword_score'] * 0.7) + (relevant_data['semantic_score'] * 0.3)
+
+    # Add availability information
+    relevant_data.loc[:, 'availability_status'] = relevant_data.apply(
+        lambda row: get_availability_status(row, availability_data), axis=1
+    )
+    
+    # Adjust relevance score based on availability
+    availability_weights = {
+        "High Availability": 1.0,
+        "Moderate Availability": 0.8,
+        "Low Availability": 0.6,
+        "Limited Availability": 0.4,
+        "Not Available": 0.1,
+        "Unknown": 0.5
+    }
+    
+    relevant_data.loc[:, 'availability_weight'] = relevant_data['availability_status'].map(availability_weights)
+    relevant_data.loc[:, 'final_score'] = relevant_data['relevance_score'] * relevant_data['availability_weight']
 
     # Add availability information
     relevant_data['availability_status'] = relevant_data.apply(
