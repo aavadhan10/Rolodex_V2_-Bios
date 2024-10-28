@@ -100,7 +100,7 @@ def init_anthropic_client():
         if not claude_api_key:
             st.error("Anthropic API key not found. Please check your Streamlit secrets configuration.")
             st.stop()
-        return Anthropic(api_key=claude_api_key)
+        return AnthropicBedrock(api_key=claude_api_key)  # Updated client class
     except Exception as e:
         st.error(f"Error initializing Anthropic client: {e}")
         st.stop()
@@ -290,9 +290,9 @@ def call_claude(messages):
         st.error(f"Error calling Claude: {e}")
         return None
 
+# Make sure this is available at the module level
 if 'client' not in globals():
     client = init_anthropic_client()
-
 def expand_query(query):
     """Expand the query with synonyms and related words."""
     expanded_query = []
