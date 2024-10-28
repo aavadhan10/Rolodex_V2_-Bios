@@ -270,18 +270,22 @@ def display_available_lawyers():
 
 
 def call_claude(messages):
-    """Call Claude API with formatted messages"""
+    """Call Claude API using the Messages API format"""
     try:
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
         
-        response = client.completions.create(
+        response = client.messages.create(
             model="claude-3-sonnet-20240229",
-            prompt=f"{system_message}\n\nHuman: {user_message}\n\nAssistant:",
-            max_tokens_to_sample=500,  # Changed from max_tokens to max_tokens_to_sample
+            system=system_message,
+            messages=[{
+                "role": "user",
+                "content": user_message
+            }],
+            max_tokens=500,
             temperature=0.7
         )
-        return response.completion
+        return response.content[0].text
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
