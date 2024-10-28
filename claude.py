@@ -49,21 +49,30 @@ client = init_anthropic_client()
 
 def call_claude(messages):
     try:
-        # Get system message and other messages
-        system_message = next((msg['content'] for msg in messages if msg['role'] == 'system'), None)
-        user_messages = [msg for msg in messages if msg['role'] != 'system']
-
-        # Use completions API instead of messages API
-        prompt = f"{system_message}\n\nHuman: {user_messages[0]['content']}\n\nAssistant:"
+        # Format the messages for Claude 3.5 Messages API
+        formatted_messages = []
+        system_message = None
         
-        response = client.completions.create(
+        for msg in messages:
+            if msg['role'] == 'system':
+                system_message = msg['content']
+            else:
+                formatted_messages.append({
+                    "role": "assistant" if msg['role'] == 'assistant' else "user",
+                    "content": msg['content']
+                })
+        
+        # Create the message with Claude 3.5 Messages API
+        response = client.messages.create(
             model="claude-3-sonnet-20240229",
-            prompt=prompt,
-            max_tokens_to_sample=1024,
+            system=system_message,
+            messages=formatted_messages,
+            max_tokens=1024,
             temperature=0.7
         )
         
-        return response.completion
+        # Extract the response text from the message response
+        return response.content[0].text
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
