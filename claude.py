@@ -4,7 +4,7 @@ import numpy as np
 import faiss
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import normalize
-from anthropic import Anthropic, HUMAN_PROMPT, ASSISTANT_PROMPT
+from anthropic import Anthropic
 import re
 import unicodedata
 import nltk
@@ -100,17 +100,23 @@ client = init_anthropic_client()
 
 def call_claude(messages):
     try:
-        # Convert the messages format to Claude 3's expected format
+        # Format messages for Claude 3.5
         formatted_messages = []
+        system_message = None
+        
         for msg in messages:
             if msg['role'] == 'system':
-                # For Claude 3, we'll add system message as a special prefix to the first user message
-                continue
-            formatted_messages.append({
-                "role": "assistant" if msg['role'] == 'assistant' else "user",
-                "content": msg['content']
-            })
-            
+                system_message = msg['content']
+            else:
+                formatted_messages.append({
+                    "role": "assistant" if msg['role'] == 'assistant' else "user",
+                    "content": msg['content']
+                })
+        
+        # If there's a system message, prepend it to the first user message
+        if system_message and formatted_messages:
+            formatted_messages[0]['content'] = f"{system_message}\n\n{formatted_messages[0]['content']}"
+        
         # Create the message with Claude 3.5
         response = client.messages.create(
             model="claude-3-sonnet-20240229",
