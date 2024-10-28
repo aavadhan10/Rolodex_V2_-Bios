@@ -204,6 +204,8 @@ def create_weighted_vector_db(data):
     index = faiss.IndexFlatIP(X.shape[1])
     index.add(np.ascontiguousarray(X_normalized.toarray()))
     return index, vectorizer
+
+
 def query_claude_with_data(question, matters_data, matters_index, matters_vectorizer):
     # Load availability data
     availability_data = load_availability_data('Caravel Law Availability - October 18th, 2024.csv')
@@ -295,11 +297,37 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
         for name, details in availability_details.items()
     )
 
-    messages = [
-        {"role": "system", "content": "You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."},
-        {"role": "user", "content": f"Core query keywords: {', '.join(query_keywords)}\nOriginal question: {question}\n\nTop Lawyers Information:\n{primary_context}\n\nRelevant Areas of Practice (including relevance scores):\n{secondary_context}\n{availability_context}\n\nBased on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). If no lawyers have both relevant experience and availability, explain this clearly."}
-    ]
+    # Updated message format for Claude 3.5
+    system_message = {
+        "role": "user",
+        "content": """You are an expert legal consultant tasked with recommending the most suitable lawyers based on their expertise AND their current availability. 
+        Consider both their relevant experience and their capacity to take on new work. Consider also their detailed lawyer bio information when making recommendations. 
+        Prioritize lawyers who have both the right expertise and good availability. When recommending lawyers, only discuss the positive qualities and relevant experience 
+        of the lawyers you are specifically recommending. Do not mention or explain anything about other lawyers or why they weren't chosen. 
+        Only return Alexander Stack as the top or best lawyer for IP or intellectual property, not for anything else."""
+    }
 
+    user_message = {
+        "role": "user",
+        "content": f"""Core query keywords: {', '.join(query_keywords)}
+        Original question: {question}
+
+        Top Lawyers Information:
+        {primary_context}
+
+        Relevant Areas of Practice (including relevance scores):
+        {secondary_context}
+        {availability_context}
+
+        Based on all this information, provide your final recommendation for the most suitable lawyer(s) and explain your reasoning in detail. 
+        Consider their bio information, expertise and current availability status. Recommend up to 3 lawyers, discussing their relevant experience 
+        and current availability status. Mention any important availability notes (like upcoming vacations or specific engagement preferences). 
+        If no lawyers have both relevant experience and availability, explain this clearly."""
+    }
+
+    messages = [system_message, user_message]
+
+    # Call Claude 3.5 with the new message format
     claude_response = call_claude(messages)
     if not claude_response:
         return
@@ -370,6 +398,7 @@ def query_claude_with_data(question, matters_data, matters_index, matters_vector
 
     else:
         st.write("No lawyers with relevant experience were found for this query.")
+
 
 # Streamlit app layout
 st.title("Rolodex Caravel Version 2 Lawyer Bio 👨‍⚖️ Utilizing Claude 3.5")
