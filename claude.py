@@ -1,4 +1,4 @@
-import streamlit as st
+cimport streamlit as st
 import pandas as pd
 import numpy as np
 import faiss
@@ -265,18 +265,22 @@ def call_claude(messages):
     try:
         system_message = messages[0]['content'] if messages[0]['role'] == 'system' else ""
         user_message = next(msg['content'] for msg in messages if msg['role'] == 'user')
-        prompt = f"{system_message}\n\nHuman: {user_message}\n\nAssistant:"
-
-        response = client.completions.create(
-            model="claude-2.1",
-            prompt=prompt,
-            max_tokens_to_sample=500,
-            temperature=0.7
+        
+        # Updated to use Claude 3.5 Sonnet
+        response = client.messages.create(
+            model="claude-3-sonnet-20240229",
+            max_tokens=500,
+            temperature=0.7,
+            messages=[
+                {"role": "system", "content": system_message},
+                {"role": "user", "content": user_message}
+            ]
         )
-        return response.completion
+        return response.content[0].text
     except Exception as e:
         st.error(f"Error calling Claude: {e}")
         return None
+
 
 def expand_query(query):
     """Expand the query with synonyms and related words."""
